@@ -18,26 +18,14 @@
 package controller.channel;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import message.Message;
-import module.Module;
-import module.ProcessingChain;
-import module.decode.DecoderFactory;
-import module.decode.event.MessageActivityModel;
-import module.log.EventLogManager;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import record.RecorderManager;
-import record.RecorderType;
-import sample.Listener;
-import source.Source;
-import source.SourceException;
-import source.SourceManager;
 import alias.AliasModel;
 import audio.AudioPacket;
 import audio.metadata.Metadata;
@@ -46,6 +34,20 @@ import controller.channel.Channel.ChannelType;
 import controller.channel.ChannelEvent.Event;
 import controller.channel.map.ChannelMapModel;
 import filter.FilterSet;
+import message.Message;
+import module.Module;
+import module.ProcessingChain;
+import module.decode.DecoderFactory;
+import module.decode.event.MessageActivityModel;
+import module.log.EventLogManager;
+import module.log.EventLogger;
+import record.RecorderManager;
+import record.RecorderType;
+import record.wave.ComplexBufferWaveRecorder;
+import sample.Listener;
+import source.Source;
+import source.SourceException;
+import source.SourceManager;
 
 public class ChannelProcessingManager implements ChannelEventListener
 {
@@ -288,6 +290,26 @@ public class ChannelProcessingManager implements ChannelEventListener
 			chain.stop();
 
 			mChannelModel.broadcast( new ChannelEvent( channel, Event.NOTIFICATION_PROCESSING_STOP ) );
+			
+			//Remove loggers and baseband recorders
+			Iterator<Module> it = chain.getModules().iterator();
+			
+			while( it.hasNext() )
+			{
+				Module module = it.next();
+				
+				if( module instanceof EventLogger )
+				{
+					it.remove();
+				}
+				else if( module instanceof ComplexBufferWaveRecorder )
+				{
+					it.remove();
+				}
+			}
+			
+			//Remove recorder manager from audio packet stream
+			removeAudioPacketListener( mRecorderManager );
 			
 			if( remove )
 			{
