@@ -17,6 +17,7 @@
  ******************************************************************************/
 package alias;
 
+import audio.broadcast.BroadcastModel;
 import gui.editor.Editor;
 
 import java.awt.Color;
@@ -27,6 +28,7 @@ import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JSeparator;
 
+import icon.IconManager;
 import net.miginfocom.swing.MigLayout;
 import sample.Listener;
 import settings.SettingsManager;
@@ -49,11 +51,11 @@ public class AliasEditor extends Editor<Alias>
     private AliasIdentifierEditor mAliasIdentifierEditor;
     private AliasActionEditor mAliasActionEditor;
     
-    public AliasEditor( AliasModel aliasModel, SettingsManager settingsManager )
+    public AliasEditor(AliasModel aliasModel, BroadcastModel broadcastModel, IconManager iconManager )
 	{
     	mAliasModel = aliasModel;
-    	mAliasNameEditor = new AliasNameEditor( mAliasModel, settingsManager );
-    	mAliasIdentifierEditor = new AliasIdentifierEditor( aliasModel );
+    	mAliasNameEditor = new AliasNameEditor( mAliasModel, iconManager );
+    	mAliasIdentifierEditor = new AliasIdentifierEditor( aliasModel, broadcastModel );
     	mAliasActionEditor = new AliasActionEditor( aliasModel );
     	
     	mAliasModel.addListener( this );
