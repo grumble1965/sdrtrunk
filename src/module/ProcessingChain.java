@@ -1,32 +1,39 @@
 /*******************************************************************************
- *     SDR Trunk 
- *     Copyright (C) 2015-2016 Dennis Sheirer
+ * sdrtrunk
+ * Copyright (C) 2014-2017 Dennis Sheirer
  *
- *     This program is free software: you can redistribute it and/or modify
- *     it under the terms of the GNU General Public License as published by
- *     the Free Software Foundation, either version 3 of the License, or
- *     (at your option) any later version.
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     This program is distributed in the hope that it will be useful,
- *     but WITHOUT ANY WARRANTY; without even the implied warranty of
- *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *     GNU General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
- *     You should have received a copy of the GNU General Public License
- *     along with this program.  If not, see <http://www.gnu.org/licenses/>
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ *
  ******************************************************************************/
 package module;
 
 import audio.AudioPacket;
 import audio.IAudioPacketListener;
 import audio.IAudioPacketProvider;
-import audio.metadata.IMetadataListener;
-import audio.metadata.IMetadataProvider;
-import audio.metadata.Metadata;
 import audio.squelch.ISquelchStateListener;
 import audio.squelch.ISquelchStateProvider;
 import audio.squelch.SquelchState;
-import controller.NamingThreadFactory;
+import channel.metadata.AttributeChangeRequest;
+import channel.metadata.IAttributeChangeRequestListener;
+import channel.metadata.IAttributeChangeRequestProvider;
+import channel.state.ChannelState;
+import channel.state.DecoderState;
+import channel.state.DecoderStateEvent;
+import channel.state.DecoderStateEvent.Event;
+import channel.state.IDecoderStateEventListener;
+import channel.state.IDecoderStateEventProvider;
+import channel.state.State;
 import controller.channel.Channel.ChannelType;
 import controller.channel.ChannelEvent;
 import controller.channel.IChannelEventListener;
@@ -39,13 +46,6 @@ import module.decode.event.CallEventModel;
 import module.decode.event.ICallEventListener;
 import module.decode.event.ICallEventProvider;
 import module.decode.event.MessageActivityModel;
-import module.decode.state.ChannelState;
-import module.decode.state.DecoderState;
-import module.decode.state.DecoderStateEvent;
-import module.decode.state.DecoderStateEvent.Event;
-import module.decode.state.IDecoderStateEventListener;
-import module.decode.state.IDecoderStateEventProvider;
-import module.decode.state.State;
 import module.log.EventLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,11 +68,10 @@ import source.tuner.TunerChannelSource;
 import source.tuner.frequency.FrequencyChangeEvent;
 import source.tuner.frequency.IFrequencyChangeListener;
 import source.tuner.frequency.IFrequencyChangeProvider;
+import util.ThreadPool;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -97,8 +96,8 @@ public class ProcessingChain implements IChannelEventListener
 {
     private final static Logger mLog = LoggerFactory.getLogger(ProcessingChain.class);
 
+    private Broadcaster<AttributeChangeRequest> mAttributeChangeRequestBroadcaster = new Broadcaster<>();
     private Broadcaster<AudioPacket> mAudioPacketBroadcaster = new Broadcaster<>();
-    private Broadcaster<Metadata> mMetadataBroadcaster = new Broadcaster<>();
     private Broadcaster<CallEvent> mCallEventBroadcaster = new Broadcaster<>();
     private Broadcaster<ChannelEvent> mChannelEventBroadcaster = new Broadcaster<>();
     private Broadcaster<ComplexBuffer> mComplexBufferBroadcaster = new Broadcaster<>();
@@ -109,7 +108,6 @@ public class ProcessingChain implements IChannelEventListener
     private Broadcaster<RealBuffer> mUnFilteredRealBufferBroadcaster = new Broadcaster<>();
     private Broadcaster<SquelchState> mSquelchStateBroadcaster = new Broadcaster<>();
 
-    private ScheduledExecutorService mScheduledExecutorService;
     private String mName;
     private AtomicBoolean mRunning = new AtomicBoolean();
 
@@ -169,9 +167,6 @@ public class ProcessingChain implements IChannelEventListener
 
         mModules.clear();
 
-        mScheduledExecutorService.shutdownNow();
-        mScheduledExecutorService = null;
-
         mAudioPacketBroadcaster.dispose();
         mCallEventBroadcaster.dispose();
         mChannelEventBroadcaster.dispose();
@@ -179,22 +174,6 @@ public class ProcessingChain implements IChannelEventListener
         mMessageBroadcaster.dispose();
         mFilteredRealBufferBroadcaster.dispose();
         mSquelchStateBroadcaster.dispose();
-
-        if(mScheduledExecutorService != null)
-        {
-            mScheduledExecutorService.shutdownNow();
-        }
-    }
-
-    /**
-     * Broadcasts the metadata to any registered listeners
-     */
-    public void broadcast(Metadata metadata)
-    {
-        if(mMetadataBroadcaster != null)
-        {
-            mMetadataBroadcaster.broadcast(metadata);
-        }
     }
 
     /**
@@ -227,9 +206,8 @@ public class ProcessingChain implements IChannelEventListener
     {
         if(isProcessing())
         {
-            throw new IllegalStateException("Processing chain is currently "
-                + "processing.  Invoke stop() on the processing chain before "
-                + "applying a new sample source");
+            throw new IllegalStateException("Processing chain is currently processing.  Invoke stop() on the " +
+                "processing chain before applying a new sample source");
         }
 
         mSource = source;
@@ -312,70 +290,59 @@ public class ProcessingChain implements IChannelEventListener
      */
     private void registerListeners(Module module)
     {
+        if(module instanceof IAttributeChangeRequestListener)
+        {
+            mAttributeChangeRequestBroadcaster.addListener(((IAttributeChangeRequestListener)module).getAttributeChangeRequestListener());
+        }
+
         if(module instanceof IAudioPacketListener)
         {
-            mAudioPacketBroadcaster.addListener(
-                ((IAudioPacketListener) module).getAudioPacketListener());
+            mAudioPacketBroadcaster.addListener(((IAudioPacketListener) module).getAudioPacketListener());
         }
 
         if(module instanceof ICallEventListener)
         {
-            mCallEventBroadcaster.addListener(
-                ((ICallEventListener) module).getCallEventListener());
+            mCallEventBroadcaster.addListener(((ICallEventListener) module).getCallEventListener());
         }
 
         if(module instanceof IChannelEventListener)
         {
-            mChannelEventBroadcaster.addListener(
-                ((IChannelEventListener) module).getChannelEventListener());
+            mChannelEventBroadcaster.addListener(((IChannelEventListener) module).getChannelEventListener());
         }
 
         if(module instanceof IComplexBufferListener)
         {
-            mComplexBufferBroadcaster.addListener(
-                ((IComplexBufferListener) module).getComplexBufferListener());
+            mComplexBufferBroadcaster.addListener(((IComplexBufferListener) module).getComplexBufferListener());
         }
 
         if(module instanceof IDecoderStateEventListener)
         {
-            mDecoderStateEventBroadcaster.addListener(
-                ((IDecoderStateEventListener) module).getDecoderStateListener());
+            mDecoderStateEventBroadcaster.addListener(((IDecoderStateEventListener) module).getDecoderStateListener());
         }
 
         if(module instanceof IFrequencyChangeListener)
         {
-            mFrequencyChangeEventBroadcaster.addListener(
-                ((IFrequencyChangeListener) module).getFrequencyChangeListener());
+            mFrequencyChangeEventBroadcaster.addListener(((IFrequencyChangeListener) module).getFrequencyChangeListener());
         }
 
         if(module instanceof IMessageListener)
         {
-            mMessageBroadcaster.addListener(
-                ((IMessageListener) module).getMessageListener());
-        }
-
-        if(module instanceof IMetadataListener)
-        {
-            mMetadataBroadcaster.addListener(
-                ((IMetadataListener) module).getMetadataListener());
+            mMessageBroadcaster.addListener(((IMessageListener) module).getMessageListener());
         }
 
         if(module instanceof IFilteredRealBufferListener)
         {
-            mFilteredRealBufferBroadcaster.addListener(
-                ((IFilteredRealBufferListener) module).getFilteredRealBufferListener());
+            mFilteredRealBufferBroadcaster.addListener(((IFilteredRealBufferListener) module).getFilteredRealBufferListener());
         }
 
         if(module instanceof ISquelchStateListener)
         {
-            mSquelchStateBroadcaster.addListener(
-                ((ISquelchStateListener) module).getSquelchStateListener());
+            mSquelchStateBroadcaster.addListener(((ISquelchStateListener) module).getSquelchStateListener());
         }
 
         if(module instanceof IUnFilteredRealBufferListener)
         {
-            mUnFilteredRealBufferBroadcaster.addListener(
-                ((IUnFilteredRealBufferListener) module).getUnFilteredRealBufferListener());
+            mUnFilteredRealBufferBroadcaster.addListener(((IUnFilteredRealBufferListener) module).getUnFilteredRealBufferListener());
         }
     }
 
@@ -385,40 +352,39 @@ public class ProcessingChain implements IChannelEventListener
      */
     private void unregisterListeners(Module module)
     {
+        if(module instanceof IAttributeChangeRequestListener)
+        {
+            mAttributeChangeRequestBroadcaster.removeListener(((IAttributeChangeRequestListener) module).getAttributeChangeRequestListener());
+        }
+
         if(module instanceof IAudioPacketListener)
         {
-            mAudioPacketBroadcaster.removeListener(
-                ((IAudioPacketListener) module).getAudioPacketListener());
+            mAudioPacketBroadcaster.removeListener(((IAudioPacketListener) module).getAudioPacketListener());
         }
 
         if(module instanceof ICallEventListener)
         {
-            mCallEventBroadcaster.removeListener(
-                ((ICallEventListener) module).getCallEventListener());
+            mCallEventBroadcaster.removeListener(((ICallEventListener) module).getCallEventListener());
         }
 
         if(module instanceof IChannelEventListener)
         {
-            mChannelEventBroadcaster.removeListener(
-                ((IChannelEventListener) module).getChannelEventListener());
+            mChannelEventBroadcaster.removeListener(((IChannelEventListener) module).getChannelEventListener());
         }
 
         if(module instanceof IComplexBufferListener)
         {
-            mComplexBufferBroadcaster.removeListener(
-                ((IComplexBufferListener) module).getComplexBufferListener());
+            mComplexBufferBroadcaster.removeListener(((IComplexBufferListener) module).getComplexBufferListener());
         }
 
         if(module instanceof IDecoderStateEventListener)
         {
-            mDecoderStateEventBroadcaster.removeListener(
-                ((IDecoderStateEventListener) module).getDecoderStateListener());
+            mDecoderStateEventBroadcaster.removeListener(((IDecoderStateEventListener) module).getDecoderStateListener());
         }
 
         if(module instanceof IFrequencyChangeListener)
         {
-            mFrequencyChangeEventBroadcaster.removeListener(
-                ((IFrequencyChangeListener) module).getFrequencyChangeListener());
+            mFrequencyChangeEventBroadcaster.removeListener(((IFrequencyChangeListener) module).getFrequencyChangeListener());
         }
 
         if(module instanceof IMessageListener)
@@ -426,27 +392,19 @@ public class ProcessingChain implements IChannelEventListener
             mMessageBroadcaster.removeListener(((IMessageListener) module).getMessageListener());
         }
 
-        if(module instanceof IMetadataListener)
-        {
-            mMetadataBroadcaster.removeListener(((IMetadataListener) module).getMetadataListener());
-        }
-
         if(module instanceof IFilteredRealBufferListener)
         {
-            mFilteredRealBufferBroadcaster.removeListener(
-                ((IFilteredRealBufferListener) module).getFilteredRealBufferListener());
+            mFilteredRealBufferBroadcaster.removeListener(((IFilteredRealBufferListener) module).getFilteredRealBufferListener());
         }
 
         if(module instanceof ISquelchStateListener)
         {
-            mSquelchStateBroadcaster.removeListener(
-                ((ISquelchStateListener) module).getSquelchStateListener());
+            mSquelchStateBroadcaster.removeListener(((ISquelchStateListener) module).getSquelchStateListener());
         }
 
         if(module instanceof IUnFilteredRealBufferListener)
         {
-            mUnFilteredRealBufferBroadcaster.removeListener(
-                ((IUnFilteredRealBufferListener) module).getUnFilteredRealBufferListener());
+            mUnFilteredRealBufferBroadcaster.removeListener(((IUnFilteredRealBufferListener) module).getUnFilteredRealBufferListener());
         }
     }
 
@@ -456,10 +414,14 @@ public class ProcessingChain implements IChannelEventListener
      */
     private void registerProviders(Module module)
     {
+        if(module instanceof IAttributeChangeRequestProvider)
+        {
+            ((IAttributeChangeRequestProvider)module).setAttributeChangeRequestListener(mAttributeChangeRequestBroadcaster);
+        }
+
         if(module instanceof IAudioPacketProvider)
         {
-            ((IAudioPacketProvider) module).setAudioPacketListener(
-                mAudioPacketBroadcaster);
+            ((IAudioPacketProvider) module).setAudioPacketListener(mAudioPacketBroadcaster);
         }
 
         if(module instanceof ICallEventProvider)
@@ -469,20 +431,17 @@ public class ProcessingChain implements IChannelEventListener
 
         if(module instanceof IChannelEventProvider)
         {
-            ((IChannelEventProvider) module).setChannelEventListener(
-                mChannelEventBroadcaster);
+            ((IChannelEventProvider) module).setChannelEventListener(mChannelEventBroadcaster);
         }
 
         if(module instanceof IDecoderStateEventProvider)
         {
-            ((IDecoderStateEventProvider) module).setDecoderStateListener(
-                mDecoderStateEventBroadcaster);
+            ((IDecoderStateEventProvider) module).setDecoderStateListener(mDecoderStateEventBroadcaster);
         }
 
         if(module instanceof IFrequencyChangeProvider)
         {
-            ((IFrequencyChangeProvider) module).setFrequencyChangeListener(
-                mFrequencyChangeEventBroadcaster);
+            ((IFrequencyChangeProvider) module).setFrequencyChangeListener(mFrequencyChangeEventBroadcaster);
         }
 
         if(module instanceof IMessageProvider)
@@ -490,28 +449,19 @@ public class ProcessingChain implements IChannelEventListener
             ((IMessageProvider) module).setMessageListener(mMessageBroadcaster);
         }
 
-        if(module instanceof IMetadataProvider)
-        {
-            ((IMetadataProvider) module).setMetadataListener(
-                mMetadataBroadcaster);
-        }
-
         if(module instanceof IFilteredRealBufferProvider)
         {
-            ((IFilteredRealBufferProvider) module)
-                .setFilteredRealBufferListener(mFilteredRealBufferBroadcaster);
+            ((IFilteredRealBufferProvider) module).setFilteredRealBufferListener(mFilteredRealBufferBroadcaster);
         }
 
         if(module instanceof ISquelchStateProvider)
         {
-            ((ISquelchStateProvider) module).setSquelchStateListener(
-                mSquelchStateBroadcaster);
+            ((ISquelchStateProvider) module).setSquelchStateListener(mSquelchStateBroadcaster);
         }
 
         if(module instanceof IUnFilteredRealBufferProvider)
         {
-            ((IUnFilteredRealBufferProvider) module)
-                .setUnFilteredRealBufferListener(mUnFilteredRealBufferBroadcaster);
+            ((IUnFilteredRealBufferProvider) module).setUnFilteredRealBufferListener(mUnFilteredRealBufferBroadcaster);
         }
     }
 
@@ -521,6 +471,11 @@ public class ProcessingChain implements IChannelEventListener
      */
     private void unregisterProviders(Module module)
     {
+        if(module instanceof IAttributeChangeRequestProvider)
+        {
+            ((IAttributeChangeRequestProvider)module).removeAttributeChangeRequestListener(mAttributeChangeRequestBroadcaster);
+        }
+
         if(module instanceof IAudioPacketProvider)
         {
             ((IAudioPacketProvider) module).setAudioPacketListener(null);
@@ -549,11 +504,6 @@ public class ProcessingChain implements IChannelEventListener
         if(module instanceof IMessageProvider)
         {
             ((IMessageProvider) module).setMessageListener(null);
-        }
-
-        if(module instanceof IMetadataProvider)
-        {
-            ((IMetadataProvider) module).setMetadataListener(null);
         }
 
         if(module instanceof IFilteredRealBufferProvider)
@@ -587,7 +537,7 @@ public class ProcessingChain implements IChannelEventListener
                 {
                     module.reset();
                 }
-				
+
 				/* Register with the source to receive sample data.  Setup a 
 				 * timer task to process the buffer queues 50 times a second 
 				 * (every 20 ms) */
@@ -615,8 +565,7 @@ public class ProcessingChain implements IChannelEventListener
                         long frequency = tcs.getFrequency();
 
                         mDecoderStateEventBroadcaster.broadcast(
-                            new DecoderStateEvent(this, Event.SOURCE_FREQUENCY,
-                                State.IDLE, frequency));
+                            new DecoderStateEvent(this, Event.SOURCE_FREQUENCY, State.IDLE, frequency));
                     }
                     catch(SourceException e)
                     {
@@ -624,18 +573,12 @@ public class ProcessingChain implements IChannelEventListener
                     }
                 }
 
-                if(mScheduledExecutorService == null)
-                {
-                    mScheduledExecutorService = Executors.newScheduledThreadPool(
-                        1, new NamingThreadFactory("channel " + mName));
-                }
-				
 				/* Start each of the modules */
                 for(Module module : mModules)
                 {
                     try
                     {
-                        module.start(mScheduledExecutorService);
+                        module.start(ThreadPool.SCHEDULED);
                     }
                     catch(Exception e)
                     {
@@ -643,7 +586,7 @@ public class ProcessingChain implements IChannelEventListener
                     }
                 }
 
-                mSource.start(mScheduledExecutorService);
+                mSource.start(ThreadPool.SCHEDULED);
             }
             else
             {
@@ -697,7 +640,7 @@ public class ProcessingChain implements IChannelEventListener
     {
         List<Module> eventLoggingModules = new ArrayList<>();
 
-        for(Module module: mModules)
+        for(Module module : mModules)
         {
             if(module instanceof EventLogger)
             {
@@ -705,7 +648,7 @@ public class ProcessingChain implements IChannelEventListener
             }
         }
 
-        for(Module eventLoggingModule: eventLoggingModules)
+        for(Module eventLoggingModule : eventLoggingModules)
         {
             removeModule(eventLoggingModule);
         }
@@ -718,7 +661,7 @@ public class ProcessingChain implements IChannelEventListener
     {
         List<Module> recordingModules = new ArrayList<>();
 
-        for(Module module: mModules)
+        for(Module module : mModules)
         {
             if(module instanceof RealBufferWaveRecorder || module instanceof ComplexBufferWaveRecorder)
             {
@@ -726,7 +669,7 @@ public class ProcessingChain implements IChannelEventListener
             }
         }
 
-        for(Module recordingModule: recordingModules)
+        for(Module recordingModule : recordingModules)
         {
             removeModule(recordingModule);
         }

@@ -18,15 +18,14 @@
 package record;
 
 import audio.AudioPacket;
-import audio.metadata.Metadata;
-import audio.metadata.MetadataType;
-import controller.ThreadPoolManager;
+import channel.metadata.Metadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import properties.SystemProperties;
 import record.wave.ComplexBufferWaveRecorder;
 import record.wave.RealBufferWaveRecorder;
 import sample.Listener;
+import util.ThreadPool;
 
 import java.io.File;
 import java.util.HashMap;
@@ -38,9 +37,7 @@ public class RecorderManager implements Listener<AudioPacket>
 
     public static final int AUDIO_SAMPLE_RATE = 8000;
 
-    private Map<String, RealBufferWaveRecorder> mRecorders = new HashMap<>();
-
-    private ThreadPoolManager mThreadPoolManager;
+    private Map<String,RealBufferWaveRecorder> mRecorders = new HashMap<>();
 
     private boolean mCanStartNewRecorders = true;
 
@@ -48,23 +45,21 @@ public class RecorderManager implements Listener<AudioPacket>
      * Manages all audio recording for all processing channels. Reconstructs audio streams and distributes channel
      * audio to each of the recorders, starting and stopping the recorders as needed.
      */
-    public RecorderManager(ThreadPoolManager threadPoolManager)
+    public RecorderManager()
     {
-        mThreadPoolManager = threadPoolManager;
     }
 
     public void dispose()
     {
-        mThreadPoolManager = null;
     }
 
     @Override
     public void receive(AudioPacket audioPacket)
     {
-        if(audioPacket.hasAudioMetadata() &&
-            audioPacket.getAudioMetadata().isRecordable())
+        if(audioPacket.hasMetadata() &&
+            audioPacket.getMetadata().isRecordable())
         {
-            String identifier = audioPacket.getAudioMetadata().getIdentifier();
+            String identifier = audioPacket.getMetadata().getUniqueIdentifier();
 
             if(mRecorders.containsKey(identifier))
             {
@@ -92,7 +87,7 @@ public class RecorderManager implements Listener<AudioPacket>
                     {
                         recorder = new RealBufferWaveRecorder(AUDIO_SAMPLE_RATE, filePrefix);
 
-                        recorder.start(mThreadPoolManager.getScheduledExecutorService());
+                        recorder.start(ThreadPool.SCHEDULED);
 
                         recorder.receive(audioPacket.getAudioBuffer());
                         mRecorders.put(identifier, recorder);
@@ -125,37 +120,19 @@ public class RecorderManager implements Listener<AudioPacket>
 
         sb.append(File.separator);
 
-        Metadata systemMetadata = packet.getAudioMetadata().getMetadata(MetadataType.SYSTEM);
+        Metadata metadata = packet.getMetadata();
 
-        sb.append(systemMetadata != null ? systemMetadata.getValue() : "UNKNOWN_SYSTEM");
+        sb.append(metadata.hasChannelConfigurationSystem() ? metadata.getChannelConfigurationSystem() + "_" : "");
+        sb.append(metadata.hasChannelConfigurationSite() ? metadata.getChannelConfigurationSite() + "_" : "");
+        sb.append(metadata.hasChannelConfigurationName() ? metadata.getChannelConfigurationName() + "_" : "");
 
-        Metadata toMetadata = packet.getAudioMetadata().getMetadata(MetadataType.TO);
-
-        if(toMetadata != null)
+        if(metadata.getPrimaryAddressTo().hasIdentifier())
         {
-            sb.append("_TO_").append(toMetadata.getValue());
+            sb.append("_TO_").append(metadata.getPrimaryAddressTo().getIdentifier());
 
-            Metadata fromMetadata = packet.getAudioMetadata().getMetadata(MetadataType.FROM);
-
-            if(fromMetadata != null)
+            if(metadata.getPrimaryAddressFrom().hasIdentifier())
             {
-                sb.append("_FROM_").append(fromMetadata.getValue());
-            }
-        }
-        else
-        {
-            Metadata siteMetadata = packet.getAudioMetadata().getMetadata(MetadataType.SITE_ID);
-
-            if(siteMetadata != null)
-            {
-                sb.append("_").append(siteMetadata.getValue());
-            }
-
-            Metadata channelMetadata = packet.getAudioMetadata().getMetadata(MetadataType.CHANNEL_NAME);
-
-            if(channelMetadata != null)
-            {
-                sb.append("_").append(channelMetadata.getValue());
+                sb.append("_FROM_").append(metadata.getPrimaryAddressFrom().getIdentifier());
             }
         }
 

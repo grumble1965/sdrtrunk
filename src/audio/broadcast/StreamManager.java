@@ -1,6 +1,6 @@
 /*******************************************************************************
  * sdrtrunk
- * Copyright (C) 2014-2016 Dennis Sheirer
+ * Copyright (C) 2014-2017 Dennis Sheirer
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,11 +19,11 @@
 package audio.broadcast;
 
 import audio.AudioPacket;
-import controller.ThreadPoolManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import record.AudioRecorder;
 import sample.Listener;
+import util.ThreadPool;
 import util.TimeStamp;
 
 import java.nio.file.Files;
@@ -44,11 +44,10 @@ public class StreamManager implements Listener<AudioPacket>
 
     private static AtomicInteger sNextRecordingNumber = new AtomicInteger();
 
-    private ThreadPoolManager mThreadPoolManager;
     private Listener<AudioRecording> mAudioRecordingListener;
     private BroadcastFormat mBroadcastFormat;
     private Path mTempDirectory;
-    private Map<Integer, AudioRecorder> mStreamRecorders = new HashMap<>();
+    private Map<Integer,AudioRecorder> mStreamRecorders = new HashMap<>();
     private Runnable mRecorderMonitor;
     private ScheduledFuture<?> mRecorderMonitorFuture;
     private AtomicBoolean mRunning = new AtomicBoolean();
@@ -61,17 +60,13 @@ public class StreamManager implements Listener<AudioPacket>
      *
      * Completed streamable audio recordings are nominated to the output listener (for broadcast) upon completion
      *
-     * @param threadPoolManager for scheduling runnables
      * @param listener to receive completed audio recordings
      * @param tempDirectory where to store temporary audio recordings
      */
-    public StreamManager(ThreadPoolManager threadPoolManager, Listener<AudioRecording> listener,
-                         BroadcastFormat broadcastFormat, Path tempDirectory)
+    public StreamManager(Listener<AudioRecording> listener, BroadcastFormat broadcastFormat, Path tempDirectory)
     {
-        assert(tempDirectory != null && Files.isDirectory(tempDirectory));
-        assert(mThreadPoolManager != null);
+        assert (tempDirectory != null && Files.isDirectory(tempDirectory));
 
-        mThreadPoolManager = threadPoolManager;
         mAudioRecordingListener = listener;
         mBroadcastFormat = broadcastFormat;
         mTempDirectory = tempDirectory;
@@ -90,8 +85,8 @@ public class StreamManager implements Listener<AudioPacket>
                 mRecorderMonitor = new RecorderMonitor();
             }
 
-            mRecorderMonitorFuture = mThreadPoolManager.scheduleFixedRate(ThreadPoolManager.ThreadType.AUDIO_PROCESSING,
-                    mRecorderMonitor, 2, TimeUnit.SECONDS);
+            mRecorderMonitorFuture = ThreadPool.SCHEDULED.scheduleAtFixedRate(mRecorderMonitor,
+                0,2, TimeUnit.SECONDS);
         }
     }
 
@@ -107,11 +102,11 @@ public class StreamManager implements Listener<AudioPacket>
                 mRecorderMonitorFuture.cancel(true);
             }
 
-            synchronized (mStreamRecorders)
+            synchronized(mStreamRecorders)
             {
                 List<Integer> streamKeys = new ArrayList<>(mStreamRecorders.keySet());
 
-                for(Integer streamKey: streamKeys)
+                for(Integer streamKey : streamKeys)
                 {
                     removeRecorder(streamKey);
                 }
@@ -122,19 +117,19 @@ public class StreamManager implements Listener<AudioPacket>
     @Override
     public void receive(AudioPacket audioPacket)
     {
-        if(mRunning.get() && audioPacket.hasAudioMetadata())
+        if(mRunning.get() && audioPacket.hasMetadata())
         {
-            synchronized (mStreamRecorders)
+            synchronized(mStreamRecorders)
             {
-                int sourceChannelID = audioPacket.getAudioMetadata().getSource();
+                int channelMetadataID = audioPacket.getMetadata().getMetadataID();
 
                 AudioPacket.Type type = audioPacket.getType();
 
                 if(type == AudioPacket.Type.AUDIO)
                 {
-                    if(mStreamRecorders.containsKey(sourceChannelID))
+                    if(mStreamRecorders.containsKey(channelMetadataID))
                     {
-                        AudioRecorder recorder = mStreamRecorders.get(sourceChannelID);
+                        AudioRecorder recorder = mStreamRecorders.get(channelMetadataID);
 
                         if(recorder != null)
                         {
@@ -144,15 +139,15 @@ public class StreamManager implements Listener<AudioPacket>
                     else
                     {
                         AudioRecorder recorder = BroadcastFactory.getAudioRecorder(getTemporaryRecordingPath(),
-                                mBroadcastFormat);
-                        recorder.start(mThreadPoolManager.getScheduledExecutorService());
+                            mBroadcastFormat);
+                        recorder.start(ThreadPool.SCHEDULED);
                         recorder.receive(audioPacket);
-                        mStreamRecorders.put(sourceChannelID, recorder);
+                        mStreamRecorders.put(channelMetadataID, recorder);
                     }
                 }
                 else if(type == AudioPacket.Type.END)
                 {
-                    removeRecorder(sourceChannelID);
+                    removeRecorder(channelMetadataID);
                 }
                 else
                 {
@@ -203,8 +198,8 @@ public class StreamManager implements Listener<AudioPacket>
         StringBuilder sb = new StringBuilder();
         sb.append(BroadcastModel.TEMPORARY_STREAM_FILE_SUFFIX);
         sb.append(sNextRecordingNumber.incrementAndGet()).append("_");
-        sb.append( TimeStamp.getLongTimeStamp( "_" ) );
-        sb.append( mBroadcastFormat.getFileExtension() );
+        sb.append(TimeStamp.getLongTimeStamp("_"));
+        sb.append(mBroadcastFormat.getFileExtension());
 
         Path temporaryRecordingPath = mTempDirectory.resolve(sb.toString());
 
@@ -219,19 +214,19 @@ public class StreamManager implements Listener<AudioPacket>
         @Override
         public void run()
         {
-            synchronized (mStreamRecorders)
+            synchronized(mStreamRecorders)
             {
                 long now = System.currentTimeMillis();
 
                 mStreamRecorders.entrySet().stream()
                     .filter(entry -> entry.getValue().getTimeRecordingStart() + MAXIMUM_RECORDER_LIFESPAN_MILLIS < now)
                     .forEach(entry ->
-                {
-                    mLog.debug("Maximum recording time limit reached - removing recorder: " +
-                        entry.getValue().getPath().toString());
+                    {
+                        mLog.debug("Maximum recording time limit reached - removing recorder: " +
+                            entry.getValue().getPath().toString());
 
-                    removeRecorder(entry.getKey());
-                });
+                        removeRecorder(entry.getKey());
+                    });
             }
         }
     }

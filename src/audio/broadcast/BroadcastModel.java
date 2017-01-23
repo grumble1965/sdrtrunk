@@ -20,14 +20,14 @@ package audio.broadcast;
 
 import alias.id.broadcast.BroadcastChannel;
 import audio.AudioPacket;
-import audio.metadata.AudioMetadata;
-import controller.ThreadPoolManager;
+import channel.metadata.Metadata;
 import icon.IconManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import properties.SystemProperties;
 import sample.Broadcaster;
 import sample.Listener;
+import util.ThreadPool;
 
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
@@ -48,7 +48,7 @@ import java.util.regex.Pattern;
 
 public class BroadcastModel extends AbstractTableModel implements Listener<AudioPacket>
 {
-    private final static Logger mLog = LoggerFactory.getLogger( BroadcastModel.class );
+    private final static Logger mLog = LoggerFactory.getLogger(BroadcastModel.class);
 
     public static final String TEMPORARY_STREAM_DIRECTORY = "streaming";
     public static final String TEMPORARY_STREAM_FILE_SUFFIX = "temporary_streaming_file_";
@@ -66,7 +66,6 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
 
     private Map<String,BroadcastConfiguration> mBroadcastConfigurationMap = new HashMap<>();
     private Map<String,AudioBroadcaster> mBroadcasterMap = new HashMap<>();
-    private ThreadPoolManager mThreadPoolManager;
     private IconManager mIconManager;
     private StreamManager mStreamManager;
     private Broadcaster<BroadcastEvent> mBroadcastEventBroadcaster = new Broadcaster<>();
@@ -74,17 +73,16 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     /**
      * Model for managing Broadcast configurations and any associated broadcaster instances.
      */
-    public BroadcastModel(ThreadPoolManager threadPoolManager, IconManager iconManager)
+    public BroadcastModel(IconManager iconManager)
     {
-        mThreadPoolManager = threadPoolManager;
         mIconManager = iconManager;
-        mStreamManager = new StreamManager(threadPoolManager, new CompletedRecordingListener(), BroadcastFormat.MP3,
+        mStreamManager = new StreamManager(new CompletedRecordingListener(), BroadcastFormat.MP3,
             SystemProperties.getInstance().getApplicationFolder(TEMPORARY_STREAM_DIRECTORY));
         mStreamManager.start();
 
         //Monitor to remove temporary recording files that have been streamed by all audio broadcasters
-        mThreadPoolManager.scheduleFixedRate(ThreadPoolManager.ThreadType.AUDIO_RECORDING,
-            new RecordingDeletionMonitor(), 15l, TimeUnit.SECONDS );
+        ThreadPool.SCHEDULED.scheduleAtFixedRate(new RecordingDeletionMonitor(),
+            15l, 15l, TimeUnit.SECONDS);
 
         removeOrphanedTemporaryRecordings();
     }
@@ -96,7 +94,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     {
         List<String> names = new ArrayList<>();
 
-        for(BroadcastConfiguration configuration: mBroadcastConfigurations)
+        for(BroadcastConfiguration configuration : mBroadcastConfigurations)
         {
             names.add(configuration.getName());
         }
@@ -117,7 +115,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
      */
     public void addBroadcastConfigurations(List<BroadcastConfiguration> configurations)
     {
-        for(BroadcastConfiguration configuration: configurations)
+        for(BroadcastConfiguration configuration : configurations)
         {
             addBroadcastConfiguration(configuration);
         }
@@ -138,11 +136,11 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
 
                 int index = mBroadcastConfigurations.size() - 1;
 
-                fireTableRowsInserted( index, index );
+                fireTableRowsInserted(index, index);
 
                 mBroadcastConfigurationMap.put(configuration.getName(), configuration);
 
-                process( new BroadcastEvent( configuration, BroadcastEvent.Event.CONFIGURATION_ADD) );
+                process(new BroadcastEvent(configuration, BroadcastEvent.Event.CONFIGURATION_ADD));
             }
         }
     }
@@ -164,6 +162,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
 
     /**
      * Updates the configuration's name so that it is unique among all other broadcast configurations
+     *
      * @param configuration
      */
     private void ensureUniqueName(BroadcastConfiguration configuration)
@@ -235,11 +234,11 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
             return false;
         }
 
-        for(BroadcastConfiguration configurationToCompare: mBroadcastConfigurations)
+        for(BroadcastConfiguration configurationToCompare : mBroadcastConfigurations)
         {
             if(configurationToCompare != configuration &&
-               configurationToCompare.getName() != null &&
-               configurationToCompare.getName().equals(name))
+                configurationToCompare.getName() != null &&
+                configurationToCompare.getName().equals(name))
             {
                 return false;
             }
@@ -258,9 +257,9 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
 
             mBroadcastConfigurationMap.remove(broadcastConfiguration.getName());
 
-            process(new BroadcastEvent( broadcastConfiguration, BroadcastEvent.Event.CONFIGURATION_DELETE));
+            process(new BroadcastEvent(broadcastConfiguration, BroadcastEvent.Event.CONFIGURATION_DELETE));
 
-            fireTableRowsDeleted( index, index );
+            fireTableRowsDeleted(index, index);
         }
     }
 
@@ -275,8 +274,8 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     @Override
     public void receive(AudioPacket audioPacket)
     {
-        if (audioPacket.hasAudioMetadata() &&
-            audioPacket.getAudioMetadata().isStreamable())
+        if(audioPacket.hasMetadata() &&
+            audioPacket.getMetadata().isStreamable())
         {
             mStreamManager.receive(audioPacket);
         }
@@ -287,15 +286,14 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
      */
     private void createBroadcaster(BroadcastConfiguration broadcastConfiguration)
     {
-        if (broadcastConfiguration != null &&
+        if(broadcastConfiguration != null &&
             broadcastConfiguration.isEnabled() &&
             broadcastConfiguration.isValid() &&
             !mBroadcasterMap.containsKey(broadcastConfiguration.getName()))
         {
-            AudioBroadcaster audioBroadcaster = BroadcastFactory.getBroadcaster(mThreadPoolManager,
-                broadcastConfiguration);
+            AudioBroadcaster audioBroadcaster = BroadcastFactory.getBroadcaster(broadcastConfiguration);
 
-            if (audioBroadcaster != null)
+            if(audioBroadcaster != null)
             {
                 audioBroadcaster.setListener(new Listener<BroadcastEvent>()
                 {
@@ -377,7 +375,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
      */
     private void broadcast(BroadcastEvent event)
     {
-        mBroadcastEventBroadcaster.broadcast( event );
+        mBroadcastEventBroadcaster.broadcast(event);
     }
 
     /**
@@ -395,14 +393,15 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
                 case CONFIGURATION_CHANGE:
                     BroadcastConfiguration broadcastConfiguration = broadcastEvent.getBroadcastConfiguration();
                     int index = mBroadcastConfigurations.indexOf(broadcastConfiguration);
-                    fireTableRowsUpdated( index, index );
+                    fireTableRowsUpdated(index, index);
 
                     //Delete and recreate the broadcaster for any broadcast configuration changes
                     String previousChannelName = cleanupMapAssociations(broadcastConfiguration);
                     deleteBroadcaster(previousChannelName);
 
                     //Delay restarting the broadcaster to allow remote server time to cleanup
-                    mThreadPoolManager.scheduleOnce(new DelayedBroadcasterStartup(broadcastConfiguration), 1, TimeUnit.SECONDS);
+                    ThreadPool.SCHEDULED.schedule(new DelayedBroadcasterStartup(broadcastConfiguration),
+                        1, TimeUnit.SECONDS);
                     break;
                 case CONFIGURATION_DELETE:
                     deleteBroadcaster(broadcastEvent.getBroadcastConfiguration().getName());
@@ -452,7 +451,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     {
         String oldName = null;
 
-        for(Map.Entry<String,BroadcastConfiguration> entry: mBroadcastConfigurationMap.entrySet())
+        for(Map.Entry<String,BroadcastConfiguration> entry : mBroadcastConfigurationMap.entrySet())
         {
             if(entry.getValue() == broadcastConfiguration)
             {
@@ -488,7 +487,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     {
         try
         {
-            if( rowIndex <= mBroadcastConfigurations.size())
+            if(rowIndex <= mBroadcastConfigurations.size())
             {
                 BroadcastConfiguration configuration = mBroadcastConfigurations.get(rowIndex);
 
@@ -584,7 +583,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
         switch(column)
         {
             case COLUMN_SERVER_ICON:
-                return null;
+                return "Streaming";
             case COLUMN_STREAM_NAME:
                 return "Name";
             case COLUMN_BROADCASTER_STATUS:
@@ -686,19 +685,19 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
         @Override
         public void receive(AudioRecording audioRecording)
         {
-            AudioMetadata metadata = audioRecording.getAudioMetadata();
+            Metadata metadata = audioRecording.getMetadata();
 
             if(metadata != null && metadata.isStreamable())
             {
-                for (BroadcastChannel broadcastChannel : metadata.getBroadcastChannels())
+                for(BroadcastChannel broadcastChannel : metadata.getBroadcastChannels())
                 {
                     String channelName = broadcastChannel.getChannelName();
 
-                    if (channelName != null)
+                    if(channelName != null)
                     {
                         AudioBroadcaster audioBroadcaster = getBroadcaster(channelName);
 
-                        if (audioBroadcaster != null)
+                        if(audioBroadcaster != null)
                         {
                             audioRecording.addPendingReplay();
                             audioBroadcaster.receive(audioRecording);
@@ -739,7 +738,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
 
                 if(!recordingsToDelete.isEmpty())
                 {
-                    for(AudioRecording recordingToDelete: recordingsToDelete)
+                    for(AudioRecording recordingToDelete : recordingsToDelete)
                     {
                         mRecordingQueue.remove(recordingToDelete);
                         removeRecording(recordingToDelete);

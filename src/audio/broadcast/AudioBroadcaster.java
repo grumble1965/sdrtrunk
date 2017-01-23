@@ -1,6 +1,6 @@
 /*******************************************************************************
  * sdrtrunk
- * Copyright (C) 2014-2016 Dennis Sheirer
+ * Copyright (C) 2014-2017 Dennis Sheirer
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,22 +18,17 @@
  ******************************************************************************/
 package audio.broadcast;
 
-import audio.AudioPacket;
-import audio.IAudioPacketListener;
 import audio.convert.ISilenceGenerator;
-import audio.metadata.AudioMetadata;
-import controller.ThreadPoolManager;
+import channel.metadata.Metadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import properties.SystemProperties;
 import sample.Listener;
+import util.ThreadPool;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Queue;
 import java.util.concurrent.LinkedTransferQueue;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -41,15 +36,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public abstract class AudioBroadcaster implements Listener<AudioRecording>
 {
-    private final static Logger mLog = LoggerFactory.getLogger( AudioBroadcaster.class );
+    private final static Logger mLog = LoggerFactory.getLogger(AudioBroadcaster.class);
 
     public static final int PROCESSOR_RUN_INTERVAL_MS = 1000;
 
-    private ThreadPoolManager mThreadPoolManager;
     private ScheduledFuture mScheduledTask;
 
     private RecordingQueueProcessor mRecordingQueueProcessor = new RecordingQueueProcessor();
-    private List<AudioRecording> mAudioRecordingQueue = new CopyOnWriteArrayList<>();
+    private Queue<AudioRecording> mAudioRecordingQueue = new LinkedTransferQueue<>();
 
     private ISilenceGenerator mSilenceGenerator;
 
@@ -82,17 +76,11 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
      * The last audio packet's metadata is automatically attached to the closed audio recording when it is enqueued for
      * broadcast.  That metadata will be updated on the remote server once the audio recording is opened for streaming.
      */
-    public AudioBroadcaster(ThreadPoolManager threadPoolManager, BroadcastConfiguration broadcastConfiguration)
+    public AudioBroadcaster(BroadcastConfiguration broadcastConfiguration)
     {
-        mThreadPoolManager = threadPoolManager;
         mBroadcastConfiguration = broadcastConfiguration;
         mDelay = mBroadcastConfiguration.getDelay();
         mSilenceGenerator = BroadcastFactory.getSilenceGenerator(broadcastConfiguration.getBroadcastFormat());
-    }
-
-    protected ThreadPoolManager getThreadPoolManager()
-    {
-        return mThreadPoolManager;
     }
 
     /**
@@ -107,9 +95,10 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
 
     /**
      * Broadcasts the next song's audio metadata prior to streaming the next song.
+     *
      * @param metadata for the next recording that will be streamed
      */
-    protected void broadcastMetadata(AudioMetadata metadata)
+    protected void broadcastMetadata(Metadata metadata)
     {
         IBroadcastMetadataUpdater metadataUpdater = getMetadataUpdater();
 
@@ -133,11 +122,8 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
         {
             if(mScheduledTask == null)
             {
-                if(mThreadPoolManager != null)
-                {
-                    mScheduledTask = mThreadPoolManager.scheduleFixedRate(ThreadPoolManager.ThreadType.AUDIO_PROCESSING,
-                            mRecordingQueueProcessor, PROCESSOR_RUN_INTERVAL_MS, TimeUnit.MILLISECONDS );
-                }
+                ThreadPool.SCHEDULED.scheduleAtFixedRate(mRecordingQueueProcessor, 0,
+                    PROCESSOR_RUN_INTERVAL_MS, TimeUnit.MILLISECONDS);
             }
         }
     }
@@ -149,9 +135,9 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         if(mStreaming.compareAndSet(true, false))
         {
-            if(mThreadPoolManager != null && mScheduledTask != null)
+            if(mScheduledTask != null)
             {
-                mThreadPoolManager.cancel(mScheduledTask);
+                mScheduledTask.cancel(true);
             }
 
             disconnect();
@@ -160,6 +146,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
 
     /**
      * Stream name for the broadcast configuration for this broadcaster
+     *
      * @return stream name or null
      */
     public String getStreamName()
@@ -199,7 +186,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         if(connected())
         {
-            mAudioRecordingQueue.add(recording);
+            mAudioRecordingQueue.offer(recording);
             broadcast(new BroadcastEvent(this, BroadcastEvent.Event.BROADCASTER_QUEUE_CHANGE));
         }
     }
@@ -246,7 +233,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         if(mBroadcastState != state)
         {
-            mLog.info("[" + getStreamName()  + "] status: " + state);
+            mLog.info("[" + getStreamName() + "] status: " + state);
             mBroadcastState = state;
 
             broadcast(new BroadcastEvent(this, BroadcastEvent.Event.BROADCASTER_STATE_CHANGE));
@@ -261,8 +248,15 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
                 //Remove all pending audio recordings
                 while(!mAudioRecordingQueue.isEmpty())
                 {
-                    AudioRecording recording = mAudioRecordingQueue.get(0);
-                    recording.removePendingReplay();
+                    try
+                    {
+                        AudioRecording recording = mAudioRecordingQueue.remove();
+                        recording.removePendingReplay();
+                    }
+                    catch(Exception e)
+                    {
+                        //Ignore
+                    }
                 }
             }
         }
@@ -386,30 +380,18 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
             {
                 mStreamedAudioCount++;
                 broadcast(new BroadcastEvent(AudioBroadcaster.this,
-                        BroadcastEvent.Event.BROADCASTER_STREAMED_COUNT_CHANGE));
+                    BroadcastEvent.Event.BROADCASTER_STREAMED_COUNT_CHANGE));
                 metadataUpdateRequired = true;
             }
 
             mInputStream = null;
 
-            AudioRecording nextRecording = null;
-
-            //Find the recording with the earliest start time
-            Iterator<AudioRecording> it = mAudioRecordingQueue.iterator();
-
-            while(it.hasNext())
-            {
-                AudioRecording recording = it.next();
-
-                if(nextRecording == null || (recording.getStartTime() < nextRecording.getStartTime()))
-                {
-                    nextRecording = recording;
-                }
-            }
+            //Peek at the next recording but don't remove it from the queue yet, so we can inspect the delay time
+            AudioRecording nextRecording = mAudioRecordingQueue.peek();
 
             if(nextRecording != null && nextRecording.getStartTime() + mDelay <= System.currentTimeMillis())
             {
-                mAudioRecordingQueue.remove(nextRecording);
+                nextRecording = mAudioRecordingQueue.remove();
 
                 try
                 {
@@ -431,7 +413,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
 
                             if(connected())
                             {
-                                broadcastMetadata(nextRecording.getAudioMetadata());
+                                broadcastMetadata(nextRecording.getMetadata());
                             }
 
                             metadataUpdateRequired = false;
