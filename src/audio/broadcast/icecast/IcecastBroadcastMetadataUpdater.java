@@ -38,6 +38,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.URLEncoder;
+import java.nio.channels.UnresolvedAddressException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Queue;
@@ -144,6 +145,10 @@ public class IcecastBroadcastMetadataUpdater implements IBroadcastMetadataUpdate
                                     session.write(updateRequest);
                                 }
                             }
+                            catch(UnresolvedAddressException uae)
+                            {
+                                //Do nothing - the server is temporarily unavailable
+                            }
                             catch(Exception e)
                             {
                                 Throwable throwableCause = e.getCause();
@@ -151,6 +156,10 @@ public class IcecastBroadcastMetadataUpdater implements IBroadcastMetadataUpdate
                                 if(throwableCause instanceof ConnectException)
                                 {
                                     //Do nothing, the server is unavailable
+                                }
+                                else if(throwableCause instanceof UnresolvedAddressException)
+                                {
+                                    //Do nothing - the server is temporarily unavailable
                                 }
                                 else
                                 {
@@ -235,7 +244,7 @@ public class IcecastBroadcastMetadataUpdater implements IBroadcastMetadataUpdate
         {
             StringBuilder sb = new StringBuilder();
             sb.append("mode=updinfo");
-            sb.append("&mount=").append(mIcecastConfiguration.getMountPoint());
+            sb.append("&mount=").append(URLEncoder.encode(mIcecastConfiguration.getMountPoint(), UTF8));
             sb.append("&charset=UTF%2d8");
             sb.append("&song=").append(URLEncoder.encode(song, UTF8));
 

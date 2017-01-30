@@ -60,6 +60,10 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     public static final int COLUMN_BROADCASTER_STATUS = 2;
     public static final int COLUMN_BROADCASTER_QUEUE_SIZE = 3;
     public static final int COLUMN_BROADCASTER_STREAMED_COUNT = 4;
+    public static final int COLUMN_BROADCASTER_AGED_OFF_COUNT = 5;
+
+    public static final String[] COLUMN_NAMES = new String[]
+        {"Streaming", "Name", "Status", "Queued", "Streamed", "Aged Off"};
 
     private List<BroadcastConfiguration> mBroadcastConfigurations = new CopyOnWriteArrayList<>();
     private List<AudioRecording> mRecordingQueue = new CopyOnWriteArrayList<>();
@@ -274,10 +278,16 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     @Override
     public void receive(AudioPacket audioPacket)
     {
-        if(audioPacket.hasMetadata() &&
-            audioPacket.getMetadata().isStreamable())
+        if(audioPacket.hasMetadata() && audioPacket.getMetadata().isStreamable())
         {
-            mStreamManager.receive(audioPacket);
+            for(BroadcastChannel channel: audioPacket.getMetadata().getBroadcastChannels())
+            {
+                if(mBroadcasterMap.containsKey(channel.getChannelName()))
+                {
+                    mStreamManager.receive(audioPacket);
+                    return;
+                }
+            }
         }
     }
 
@@ -286,9 +296,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
      */
     private void createBroadcaster(BroadcastConfiguration broadcastConfiguration)
     {
-        if(broadcastConfiguration != null &&
-            broadcastConfiguration.isEnabled() &&
-            broadcastConfiguration.isValid() &&
+        if(broadcastConfiguration != null && broadcastConfiguration.isEnabled() && broadcastConfiguration.isValid() &&
             !mBroadcasterMap.containsKey(broadcastConfiguration.getName()))
         {
             AudioBroadcaster audioBroadcaster = BroadcastFactory.getBroadcaster(broadcastConfiguration);
@@ -393,15 +401,20 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
                 case CONFIGURATION_CHANGE:
                     BroadcastConfiguration broadcastConfiguration = broadcastEvent.getBroadcastConfiguration();
                     int index = mBroadcastConfigurations.indexOf(broadcastConfiguration);
-                    fireTableRowsUpdated(index, index);
 
-                    //Delete and recreate the broadcaster for any broadcast configuration changes
+                    //Delete the existing broadcaster for any broadcast configuration changes
                     String previousChannelName = cleanupMapAssociations(broadcastConfiguration);
                     deleteBroadcaster(previousChannelName);
 
-                    //Delay restarting the broadcaster to allow remote server time to cleanup
-                    ThreadPool.SCHEDULED.schedule(new DelayedBroadcasterStartup(broadcastConfiguration),
-                        1, TimeUnit.SECONDS);
+                    //If the configuration is enabled, create a new broadcaster after a brief delay
+                    if(broadcastConfiguration.isEnabled())
+                    {
+                        //Delay restarting the broadcaster to allow remote server time to cleanup
+                        ThreadPool.SCHEDULED.schedule(new DelayedBroadcasterStartup(broadcastConfiguration),
+                            3, TimeUnit.SECONDS);
+                    }
+
+                    fireTableRowsUpdated(index, index);
                     break;
                 case CONFIGURATION_DELETE:
                     deleteBroadcaster(broadcastEvent.getBroadcastConfiguration().getName());
@@ -430,6 +443,12 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
                     if(row >= 0)
                     {
                         fireTableCellUpdated(row, COLUMN_BROADCASTER_STREAMED_COUNT);
+                    }
+                    break;
+                case BROADCASTER_AGED_OFF_COUNT_CHANGE:
+                    if(row >= 0)
+                    {
+                        fireTableCellUpdated(row, COLUMN_BROADCASTER_AGED_OFF_COUNT);
                     }
                     break;
             }
@@ -479,7 +498,7 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     @Override
     public int getColumnCount()
     {
-        return 5;
+        return COLUMN_NAMES.length;
     }
 
     @Override
@@ -536,6 +555,14 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
                                 return audioBroadcasterC.getStreamedAudioCount();
                             }
                             break;
+                        case COLUMN_BROADCASTER_AGED_OFF_COUNT:
+                            AudioBroadcaster audioBroadcasterD = mBroadcasterMap.get(configuration.getName());
+
+                            if(audioBroadcasterD != null)
+                            {
+                                return audioBroadcasterD.getAgedOffAudioCount();
+                            }
+                            break;
                         default:
                             break;
                     }
@@ -580,18 +607,9 @@ public class BroadcastModel extends AbstractTableModel implements Listener<Audio
     @Override
     public String getColumnName(int column)
     {
-        switch(column)
+        if(0 <= column && column < COLUMN_NAMES.length)
         {
-            case COLUMN_SERVER_ICON:
-                return "Streaming";
-            case COLUMN_STREAM_NAME:
-                return "Name";
-            case COLUMN_BROADCASTER_STATUS:
-                return "Status";
-            case COLUMN_BROADCASTER_QUEUE_SIZE:
-                return "Queued";
-            case COLUMN_BROADCASTER_STREAMED_COUNT:
-                return "Streamed";
+            return COLUMN_NAMES[column];
         }
 
         return null;

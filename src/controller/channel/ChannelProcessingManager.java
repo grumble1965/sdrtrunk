@@ -91,6 +91,14 @@ public class ChannelProcessingManager implements ChannelEventListener
     }
 
     /**
+     * Channel model
+     */
+    public ChannelModel getChannelModel()
+    {
+        return mChannelModel;
+    }
+
+    /**
      * Indicates if a processing chain is constructed for the channel and that
      * the processing chain is currently processing.
      */
@@ -107,6 +115,35 @@ public class ChannelProcessingManager implements ChannelEventListener
     public ProcessingChain getProcessingChain(Channel channel)
     {
         return mProcessingChains.get(channel.getChannelID());
+    }
+
+    /**
+     * Returns the channel associated with the processing chain
+     * @param processingChain
+     * @return channel associated with the processing chain or null
+     */
+    public Channel getChannel(ProcessingChain processingChain)
+    {
+        return mChannelModel.getChannelFromChannelID(getChannelID(processingChain));
+    }
+
+    /**
+     * Returns the channel ID associated with the processing chain
+     */
+    private Integer getChannelID(ProcessingChain processingChain)
+    {
+        if(processingChain != null)
+        {
+            for(Map.Entry<Integer,ProcessingChain> entry: mProcessingChains.entrySet())
+            {
+                if(entry.getValue() == processingChain)
+                {
+                    return entry.getKey();
+                }
+            }
+        }
+
+        return null;
     }
 
     @Override

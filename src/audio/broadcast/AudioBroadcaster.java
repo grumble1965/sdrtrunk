@@ -40,7 +40,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
 
     public static final int PROCESSOR_RUN_INTERVAL_MS = 1000;
 
-    private ScheduledFuture mScheduledTask;
+    private ScheduledFuture mRecordingQueueProcessorFuture;
 
     private RecordingQueueProcessor mRecordingQueueProcessor = new RecordingQueueProcessor();
     private Queue<AudioRecording> mAudioRecordingQueue = new LinkedTransferQueue<>();
@@ -51,8 +51,10 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     private BroadcastState mBroadcastState = BroadcastState.READY;
 
     private int mStreamedAudioCount = 0;
+    private int mAgedOffAudioCount = 0;
     private BroadcastConfiguration mBroadcastConfiguration;
     private long mDelay;
+    private long mMaximumRecordingAge;
     private AtomicBoolean mStreaming = new AtomicBoolean();
 
     /**
@@ -80,6 +82,7 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         mBroadcastConfiguration = broadcastConfiguration;
         mDelay = mBroadcastConfiguration.getDelay();
+        mMaximumRecordingAge = mBroadcastConfiguration.getMaximumRecordingAge();
         mSilenceGenerator = BroadcastFactory.getSilenceGenerator(broadcastConfiguration.getBroadcastFormat());
     }
 
@@ -120,10 +123,10 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         if(mStreaming.compareAndSet(false, true))
         {
-            if(mScheduledTask == null)
+            if(mRecordingQueueProcessorFuture == null)
             {
-                ThreadPool.SCHEDULED.scheduleAtFixedRate(mRecordingQueueProcessor, 0,
-                    PROCESSOR_RUN_INTERVAL_MS, TimeUnit.MILLISECONDS);
+                mRecordingQueueProcessorFuture = ThreadPool.SCHEDULED.scheduleAtFixedRate(mRecordingQueueProcessor,
+                    0, PROCESSOR_RUN_INTERVAL_MS, TimeUnit.MILLISECONDS);
             }
         }
     }
@@ -135,9 +138,10 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     {
         if(mStreaming.compareAndSet(true, false))
         {
-            if(mScheduledTask != null)
+            if(mRecordingQueueProcessorFuture != null)
             {
-                mScheduledTask.cancel(true);
+                mRecordingQueueProcessorFuture.cancel(true);
+                mRecordingQueueProcessorFuture = null;
             }
 
             disconnect();
@@ -175,6 +179,14 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
     public int getStreamedAudioCount()
     {
         return mStreamedAudioCount;
+    }
+
+    /**
+     * Number of audio recordings that were removed for exceeding age limit
+     */
+    public int getAgedOffAudioCount()
+    {
+        return mAgedOffAudioCount;
     }
 
     /**
@@ -386,8 +398,21 @@ public abstract class AudioBroadcaster implements Listener<AudioRecording>
 
             mInputStream = null;
 
-            //Peek at the next recording but don't remove it from the queue yet, so we can inspect the delay time
+            //Peek at the next recording but don't remove it from the queue yet, so we can inspect the start time for
+            //age limits and/or delay elapsed
             AudioRecording nextRecording = mAudioRecordingQueue.peek();
+
+            //Purge any recordings that have exceeded maximum recording age limit
+            while(nextRecording != null &&
+                (nextRecording.getStartTime() + mDelay + mMaximumRecordingAge) < java.lang.System.currentTimeMillis())
+            {
+                nextRecording = mAudioRecordingQueue.remove();
+                nextRecording.removePendingReplay();
+                mAgedOffAudioCount++;
+                broadcast(new BroadcastEvent(AudioBroadcaster.this,
+                    BroadcastEvent.Event.BROADCASTER_AGED_OFF_COUNT_CHANGE));
+                nextRecording = mAudioRecordingQueue.peek();
+            }
 
             if(nextRecording != null && nextRecording.getStartTime() + mDelay <= System.currentTimeMillis())
             {
